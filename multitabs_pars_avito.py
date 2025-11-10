@@ -2,6 +2,8 @@ import json
 import re
 import time
 import random
+import atexit
+import signal
 from base64 import b64decode
 from io import BytesIO
 from pathlib import Path
@@ -19,21 +21,26 @@ from playwright.sync_api import (
 
 # ========== НАСТРОЙКИ ==========
 
-# Файл со ссылками (Excel/CSV/TXT). Укажи свой файл:
 INPUT_FILE = Path("АВТОСАЛОН 09.11 2000.xlsx")
-INPUT_SHEET = None        # None = все листы; либо имя/индекс
-URL_COLUMN = None         # None = искать по всем колонкам regex-ом; либо имя колонки
+INPUT_SHEET = None
+URL_COLUMN = None
 
 OUT_DIR = Path("avito_phones_playwright")
 OUT_DIR.mkdir(exist_ok=True)
 IMG_DIR = OUT_DIR / "phones"
 IMG_DIR.mkdir(exist_ok=True)
+DEBUG_DIR = OUT_DIR / "debug"
+DEBUG_DIR.mkdir(exist_ok=True)
 
-SAVE_DATA_URI = True      # True -> сохраняем data:image... в JSON; False -> путь к PNG
-HEADLESS = False          # нужно False: логин руками
-CONCURRENCY = 3           # сколько вкладок одновременно (2–4 безопасно)
-MAX_ITEMS = None          # ограничить кол-во ссылок; None = все
-CLICK_DELAY = 8           # ожидание после клика "Показать телефон", сек
+OUT_JSON = OUT_DIR / "phones_map.json"
+SAVE_DATA_URI = True
+HEADLESS = False
+
+# Тестовый прогон: 6 объявлений, по 3 во вкладках
+TEST_TOTAL = 6
+CONCURRENCY = 3
+
+CLICK_DELAY = 8
 NAV_TIMEOUT = 90_000
 
 USE_PROXY = False
@@ -42,7 +49,7 @@ PROXY_PORT = 17518
 PROXY_LOGIN = "YT4aBK"
 PROXY_PASSWORD = "nUg2UTut9UMU"
 
-PAGE_DELAY_BETWEEN_BATCHES = (2.0, 4.0)  # пауза между пакетами
+PAGE_DELAY_BETWEEN_BATCHES = (2.0, 4.0)
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
       "AppleWebKit/537.36 (KHTML, like Gecko) "
       "Chrome/120.0.0.0 Safari/537.36")
@@ -85,6 +92,8 @@ def close_city_or_cookie_modals(page: Page):
         "button[class*='close']",
         "button:has-text('Понятно')",
         "button:has-text('Хорошо')",
+        "button:has-text('Согласен')",
+        "button:has-text('Принять')",
     ]
     for sel in selectors:
         try:
@@ -97,7 +106,6 @@ def close_city_or_cookie_modals(page: Page):
 
 
 def close_login_modal_if_exists(page: Page) -> bool:
-    """Если всплыла авторизация — закрываем и считаем объявление неудачным."""
     selectors_modal = [
         "[data-marker='login-form']",
         "[data-marker='registration-form']",
@@ -137,7 +145,6 @@ def close_login_modal_if_exists(page: Page) -> bool:
 
 
 def save_phone_png_from_data_uri(data_uri: str, file_stem: str) -> str | None:
-    """Сохраняет картинку из data:image/... в phones/{file_stem}.png"""
     try:
         header, b64_data = data_uri.split(",", 1)
         raw = b64decode(b64_data)
@@ -153,40 +160,107 @@ def save_phone_png_from_data_uri(data_uri: str, file_stem: str) -> str | None:
 
 
 def get_avito_id_from_url(url: str) -> str:
-    """Пытается вытащить числовой ID из URL объявления."""
     m = re.search(r'(\d{7,})', url)
     return m.group(1) if m else str(int(time.time()))
 
 
-def click_show_phone_on_ad(page: Page) -> bool:
-    """На странице объявления ищет и кликает кнопку 'Показать телефон/номер'."""
-    btn_selectors = [
-        "button[data-marker='item-phone-button']",
-        "button:has-text('Показать телефон')",
-        "button:has-text('Показать номер')",
-        "button[aria-label*='Показать телефон']",
-        "button[aria-label*='Показать номер']",
-    ]
-    for sel in btn_selectors:
+def try_click(page: Page, el) -> bool:
+    """Пробуем обычный click, если не вышло — кликаем через JS."""
+    try:
+        el.scroll_into_view_if_needed()
+        human_sleep(0.15, 0.4)
+        el.click()
+        return True
+    except Exception:
         try:
-            b = page.query_selector(sel)
-            if b and b.is_enabled() and b.is_visible():
-                b.scroll_into_view_if_needed()
-                human_sleep(0.25, 0.6)
-                b.click()
-                print("📞 Нажали 'Показать телефон'.")
-                return True
+            box = el.bounding_box() or {}
+            if box:
+                page.mouse.move(box.get("x", 0) + 5, box.get("y", 0) + 5)
+                human_sleep(0.1, 0.2)
+            page.evaluate("(e)=>e.click()", el)
+            return True
         except Exception:
-            continue
+            return False
+
+
+def click_show_phone_on_ad(page: Page) -> bool:
+    """
+    Ищем и нажимаем кнопку "Показать телефон/номер" в разных вариантах вёрстки.
+    Возвращаем True при успехе.
+    """
+    # Иногда кнопка в блоке контактов — подскроллим к нему
+    for anchor in [
+        "[data-marker='seller-info']",
+        "[data-marker='item-sidebar']",
+        "section:has(button[data-marker*='phone'])",
+        "section:has(button:has-text('Показать'))",
+    ]:
+        try:
+            a = page.query_selector(anchor)
+            if a:
+                a.scroll_into_view_if_needed()
+                human_sleep(0.2, 0.4)
+                break
+        except Exception:
+            pass
+
+    # Наборы селекторов на случай разных вёрсток
+    selector_groups = [
+        [
+            "button[data-marker='item-phone-button']",
+            "button[data-marker='phone-button/number']",
+            "button[data-marker*='phone-button']",
+        ],
+        [
+            "button:has-text('Показать телефон')",
+            "button:has-text('Показать номер')",
+            "a:has-text('Показать телефон')",
+            "a:has-text('Показать номер')",
+        ],
+        [
+            "button[aria-label*='Показать телефон']",
+            "button[aria-label*='Показать номер']",
+        ],
+        [
+            "[data-marker*='phone'] button",
+            "[data-marker*='contacts'] button",
+        ],
+    ]
+
+    # Попробуем дождаться появления чего-то «похожего на кнопку» недолго
+    try:
+        page.wait_for_selector("button", timeout=2000)
+    except Exception:
+        pass
+
+    for group in selector_groups:
+        for sel in group:
+            try:
+                el = page.query_selector(sel)
+                if el and el.is_visible() and el.is_enabled():
+                    if try_click(page, el):
+                        print("📞 Нажали 'Показать телефон'.")
+                        return True
+            except Exception:
+                continue
+
+    # Иногда кнопка в «липком» футере карточки
+    try:
+        sticky = page.query_selector("footer:has(button)")
+        if sticky:
+            btn = sticky.query_selector("button")
+            if btn and btn.is_visible() and btn.is_enabled():
+                if try_click(page, btn):
+                    print("📞 Нажали кнопку в липком футере.")
+                    return True
+    except Exception:
+        pass
+
     print("⚠️ Кнопка 'Показать телефон' не найдена.")
     return False
 
 
 def extract_phone_data_uri_on_ad(page: Page) -> str | None:
-    """
-    На странице объявления ищет img[data-marker='phone-image'],
-    возвращает data:image/png;base64,....
-    """
     try:
         img = page.query_selector("img[data-marker='phone-image']")
     except PWError:
@@ -237,7 +311,6 @@ def read_urls_from_excel_or_csv(
     else:
         raise ValueError("Поддерживаются .xlsx/.xls/.csv/.txt")
 
-    # нормализуем и убираем дубли
     cleaned = []
     seen = set()
     for u in urls:
@@ -261,13 +334,38 @@ def batched(iterable, n):
         yield batch
 
 
-def process_batch(context, batch_urls):
-    """
-    Открывает пачку вкладок, переходит по URL, кликает 'Показать телефон',
-    ждёт CLICK_DELAY, собирает data:image... и закрывает вкладки.
-    Возвращает dict[url] = data_uri | png_path | None
-    """
-    results: dict[str, str] = {}
+# === Безопасное сохранение и восстановление прогресса ===
+
+def atomic_write_json(path: Path, data: dict):
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def load_progress(path: Path) -> dict[str, str]:
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"⚠️ Не удалось прочитать существующий прогресс: {e}")
+    return {}
+
+
+def dump_debug(page: Page, url: str):
+    """Сохраняем скрин и HTML, если кнопка не нашлась — для диагностики верстки."""
+    try:
+        ad_id = get_avito_id_from_url(url)
+        png_path = DEBUG_DIR / f"{ad_id}.png"
+        html_path = DEBUG_DIR / f"{ad_id}.html"
+        page.screenshot(path=str(png_path), full_page=True)
+        html = safe_get_content(page)
+        html_path.write_text(html, encoding="utf-8")
+        print(f"🪪 Debug сохранён: {png_path.name}, {html_path.name}")
+    except Exception as e:
+        print(f"⚠️ Не удалось сохранить debug: {e}")
+
+
+def process_batch(context, batch_urls, on_result):
     pages: list[tuple[str, Page]] = []
     try:
         # 1) Открыли вкладки и перешли по URL
@@ -280,14 +378,14 @@ def process_batch(context, batch_urls):
                 print(f"⚠️ Навигация по таймауту: {url}")
             human_sleep(0.2, 0.6)
 
-        # 2) На каждой вкладке — модалки/кнопка
+        # 2) Обработка модалок + попытка клика по кнопке
         for url, p in pages:
             if is_captcha_or_block(p):
                 print(f"🚫 Капча/блок на {url}")
                 continue
             close_city_or_cookie_modals(p)
             if not click_show_phone_on_ad(p):
-                continue
+                dump_debug(p, url)
 
         # 3) Ждём отрисовку картинок телефонов
         time.sleep(CLICK_DELAY)
@@ -301,35 +399,59 @@ def process_batch(context, batch_urls):
                 continue
 
             if SAVE_DATA_URI:
-                results[url] = data_uri
-                print(f"✅ {url} -> [data:image...]")
+                value = data_uri
             else:
                 avito_id = get_avito_id_from_url(url)
                 out_path = save_phone_png_from_data_uri(data_uri, avito_id)
-                if out_path:
-                    results[url] = out_path
-                    print(f"✅ {url} -> {out_path}")
+                if not out_path:
+                    continue
+                value = out_path
+
+            on_result(url, value)
+            print(f"✅ {url} -> {'[data:image...]' if SAVE_DATA_URI else value}")
 
     finally:
-        # 5) Закрываем все вкладки пакета
+        # 5) Закрываем вкладки
         for _, p in pages:
             try:
                 p.close()
             except Exception:
                 pass
 
-    return results
-
 
 # ========== ОСНОВНОЙ СЦЕНАРИЙ ==========
 
 def main():
     urls = read_urls_from_excel_or_csv(INPUT_FILE, INPUT_SHEET, URL_COLUMN)
-    if MAX_ITEMS:
-        urls = urls[:MAX_ITEMS]
-    print(f"🔎 Всего ссылок к обработке: {len(urls)}")
+
+    # ТЕСТ: берём только первые 6 ссылок
+    urls = urls[:TEST_TOTAL]
+
+    # Поднимаем прогресс и пропускаем обработанные
+    phones_map: dict[str, str] = load_progress(OUT_JSON)
+    already_done = set(phones_map.keys())
+    urls = [u for u in urls if u not in already_done]
+
+    print(f"🔎 Новых ссылок к обработке: {len(urls)} (уже сохранено ранее: {len(already_done)})")
     if not urls:
+        print(f"ℹ️ Нечего делать. Прогресс в {OUT_JSON}: {len(phones_map)} записей.")
         return
+
+    def flush_progress():
+        try:
+            atomic_write_json(OUT_JSON, phones_map)
+        except Exception as e:
+            print(f"❗ Ошибка записи прогресса: {e}")
+
+    atexit.register(flush_progress)
+    try:
+        signal.signal(signal.SIGINT, lambda *a: (flush_progress(), exit(1)))
+    except Exception:
+        pass
+    try:
+        signal.signal(signal.SIGTERM, lambda *a: (flush_progress(), exit(1)))
+    except Exception:
+        pass
 
     with sync_playwright() as p:
         launch_kwargs = {
@@ -354,10 +476,11 @@ def main():
         context.set_default_navigation_timeout(NAV_TIMEOUT)
         context.set_default_timeout(NAV_TIMEOUT)
 
-        # --- РУЧНОЙ ЛОГИН на 1-й ссылке ---
+        # Ручной логин на первой ссылке тестового набора
         page = context.new_page()
+        first_url = urls[0]
         try:
-            page.goto(urls[0], wait_until="load", timeout=NAV_TIMEOUT)
+            page.goto(first_url, wait_until="load", timeout=NAV_TIMEOUT)
         except PWTimeoutError:
             pass
 
@@ -370,31 +493,35 @@ def main():
         if is_captcha_or_block(page):
             print("❌ Всё ещё капча/блок — выходим.")
             browser.close()
+            flush_progress()
             return
 
-        # Можно закрыть стартовую вкладку логина
         try:
             page.close()
         except Exception:
             pass
 
-        phones_map: dict[str, str] = {}
+        def on_result(url: str, value: str):
+            phones_map[url] = value
+            atomic_write_json(OUT_JSON, phones_map)
 
-        # --- Обработка пакетами во множественных вкладках ---
+        # Обработка пакетами по 3 вкладки (ровно две пачки на наш TEST_TOTAL=6)
         for batch_urls in batched(urls, CONCURRENCY):
             try:
-                res = process_batch(context, batch_urls)
-                phones_map.update(res)
+                process_batch(context, batch_urls, on_result)
+            except KeyboardInterrupt:
+                print("⏹ Остановлено пользователем.")
+                flush_progress()
+                break
             except Exception as e:
                 print(f"⚠️ Ошибка при обработке пакета: {e}")
+                flush_progress()
             human_sleep(*PAGE_DELAY_BETWEEN_BATCHES)
 
         browser.close()
+        flush_progress()
 
-        # --- Сохранение результата ---
-        out_file = OUT_DIR / "phones_map.json"
-        out_file.write_text(json.dumps(phones_map, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"\n✅ Готово. Сохранено {len(phones_map)} записей в {out_file}")
+        print(f"\n✅ Готово. В {OUT_JSON} сейчас {len(phones_map)} записей.")
         if not SAVE_DATA_URI:
             print(f"📂 PNG лежат в {IMG_DIR}")
 
