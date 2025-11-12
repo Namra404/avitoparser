@@ -21,7 +21,7 @@ from playwright.sync_api import (
 
 # ========== НАСТРОЙКИ ==========
 
-INPUT_FILE = Path("АВТОСАЛОН 11.11.xlsx")
+INPUT_FILE = Path("АВТОСАЛОН 12.11 1000.xlsx")
 INPUT_SHEET = None
 URL_COLUMN = None
 
@@ -37,7 +37,7 @@ SAVE_DATA_URI = True
 HEADLESS = False
 
 # Тестовый прогон: 6 объявлений, по 3 во вкладках
-TEST_TOTAL = 400
+TEST_TOTAL = 550
 CONCURRENCY = 3
 
 CLICK_DELAY = 8
