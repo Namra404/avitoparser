@@ -2,11 +2,13 @@ import atexit
 import random
 import signal
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
-from .settings import *
-from .io_progress import atomic_write_json, load_progress
-from .input_urls import read_urls_from_excel_or_csv
-from .pool import process_with_pool, recheck_pending_once
-from .dom_utils import is_captcha_or_block
+
+from multitabs_pars_test import recheck_pending_once
+from avito_phones_parser_script.settings import *
+from avito_phones_parser_script.io_progress import atomic_write_json, load_progress
+from avito_phones_parser_script.input_urls import read_urls_from_excel_or_csv
+from avito_phones_parser_script.pool import process_with_pool
+from avito_phones_parser_script.dom_utils import is_captcha_or_block
 
 def main():
     urls = read_urls_from_excel_or_csv(INPUT_FILE, INPUT_SHEET, URL_COLUMN)

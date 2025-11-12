@@ -8,7 +8,7 @@ from .settings import (
     CONCURRENCY, NAV_TIMEOUT, PAGE_DELAY_BETWEEN_BATCHES, SAVE_DATA_URI,
     PENDING_JSON, QUOTA_WAIT, HUMAN,
 )
-from .selectors import click_show_phone_on_ad, extract_phone_data_uri_on_ad
+from .pw_selectors import click_show_phone_on_ad, extract_phone_data_uri_on_ad
 from .status import classify_ad_status, is_quota_limit
 
 from .io_progress import save_pending, load_pending
@@ -108,7 +108,7 @@ def process_with_pool(context, urls, on_result):
                     continue
                 if is_captcha_or_block(p):
                     continue
-                from .selectors import close_login_modal_if_exists
+                from .pw_selectors import close_login_modal_if_exists
                 if close_login_modal_if_exists(p):
                     continue
 
