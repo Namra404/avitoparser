@@ -3,7 +3,6 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-
 from decode_photos import decode_img_phones
 
 INPUT_JSON = Path("avito_phones_playwright/phones_map.json")
@@ -35,5 +34,16 @@ def save_to_excel(url2phone: dict, out_path: Path):
 
 if __name__ == "__main__":
     data = load_data(INPUT_JSON)
-    result = decode_img_phones(data)
+
+    #  Фильтрация служебных пометок
+    filtered = {
+        url: val
+        for url, val in data.items()
+        if isinstance(val, str) and not val.startswith("__SKIP")
+    }
+    print(f"Всего записей: {len(data)} | после фильтрации: {len(filtered)}")
+
+    result = decode_img_phones(filtered)
+    if not result:
+        print("decode_img_phones не извлек ни одного телефона.")
     save_to_excel(result, OUTPUT_XLSX)

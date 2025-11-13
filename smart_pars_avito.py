@@ -21,59 +21,76 @@ from playwright.sync_api import (
 
 # ========== НАСТРОЙКИ ==========
 
-INPUT_FILE = Path("АВТОСАЛОН 12.11 1000.xlsx")
-INPUT_SHEET = None
-URL_COLUMN = None
 
-OUT_DIR = Path("avito_phones_playwright")
+# === ВХОДНОЙ ФАЙЛ С ССЫЛКАМИ ===
+INPUT_FILE = Path("РЕМОНТ МСК МО 13.11.xlsx")  # имя Excel/CSV-файла со ссылками на объявления
+INPUT_SHEET = None                             # имя листа в Excel; None = использовать все листы
+URL_COLUMN = None                              # имя колонки со ссылками; None = искать ссылки во всех колонках
+
+# === ПАПКИ И ОСНОВНЫЕ ВЫХОДНЫЕ ФАЙЛЫ ===
+OUT_DIR = Path("avito_phones_playwright") # рабочая директория парсера
 OUT_DIR.mkdir(exist_ok=True)
-IMG_DIR = OUT_DIR / "phones"
+IMG_DIR = OUT_DIR / "phones"              # сюда будут сохраняться PNG с номерами (если SAVE_DATA_URI = False  (не проврял давно и не используется))
 IMG_DIR.mkdir(exist_ok=True)
-DEBUG_DIR = OUT_DIR / "debug"
+DEBUG_DIR = OUT_DIR / "debug"             # сюда складываем скриншоты и html проблемных объявлений
 DEBUG_DIR.mkdir(exist_ok=True)
 
-OUT_JSON = OUT_DIR / "phones_map.json"
-PENDING_JSON = OUT_DIR / "pending_review.json"   # ссылки «на модерации» и «лимит контактов»
-SAVE_DATA_URI = True
-HEADLESS = False
+OUT_JSON = OUT_DIR / "phones_map.json"         # основной результат: {url: data:image... или тег __SKIP_*__}
+PENDING_JSON = OUT_DIR / "pending_review.json" # ссылки «на модерации» и с лимитом контактов (в разработке на будущее)
+SAVE_DATA_URI = True                           # True = сохраняем data:image в JSON; False = сохраняем PNG в IMG_DIR
+HEADLESS = False                               # False = браузер виден (можно логиниться руками)
 
-TEST_TOTAL = 550
-CONCURRENCY = 3
+# === ОБЪЁМ И ПАРАЛЛЕЛЬНОСТЬ ===
+TEST_TOTAL = 765                               # максимум объявлений за один запуск (обрежется по списку ссылок)
+CONCURRENCY = 3                                # сколько вкладок (tab-ов) одновременно открыто (2–3 оптимально)
 
-CLICK_DELAY = 8
-NAV_TIMEOUT = 90_000
 
-USE_PROXY = False
-PROXY_HOST = "mproxy.site"
-PROXY_PORT = 17518
-PROXY_LOGIN = "YT4aBK"
-PROXY_PASSWORD = "nUg2UTut9UMU"
+# === БАЗОВЫЕ ТАЙМАУТЫ ===
+CLICK_DELAY = 8                                # базовая задержка перед ожиданием появления картинки с номером
+NAV_TIMEOUT = 90_000                           # таймаут загрузки страницы, мс (90 секунд)
 
-PAGE_DELAY_BETWEEN_BATCHES = (2.0, 4.0)
+
+# === НАСТРОЙКИ ПРОКСИ ===
+USE_PROXY = False                              # True = использовать прокси, False = напрямую
+PROXY_HOST = "mproxy.site"                     # адрес прокси-сервера
+PROXY_PORT = 17518                             # порт прокси-сервера
+PROXY_LOGIN = "YT4aBK"                         # логин для авторизации на прокси
+PROXY_PASSWORD = "nUg2UTut9UMU"                # пароль для авторизации на прокси
+
+# === Чуть медленнее и естественнее поведение ===
+PAGE_DELAY_BETWEEN_BATCHES = (2.4, 5.2)        # пауза между партиями ссылок (раньше была (2.0, 4.0))
+NAV_STAGGER_BETWEEN_TABS = (0.45, 1.35)        # пауза перед открытием КАЖДОЙ вкладки (чтобы не стартовали все разом)
+POST_NAV_IDLE = (0.45, 1.05)                   # небольшая «заминка» после загрузки страницы перед действиями
+BATCH_CONCURRENCY_JITTER = True                # иногда работаем 2 вкладками вместо 3 для естественности
+CLOSE_STAGGER_BETWEEN_TABS = (0.25, 0.75)      # вкладки закрываем с небольшой случайной паузой
+
+
+# === USER-AGENT браузера ===
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
       "AppleWebKit/537.36 (KHTML, like Gecko) "
       "Chrome/120.0.0.0 Safari/537.36")
 
 # === ЧЕЛОВЕЧНОСТЬ / АНТИБАН-ПОВЕДЕНИЕ ===
 HUMAN = {
-    "pre_page_warmup_scrolls": (1, 3),
-    "scroll_step_px": (250, 900),
-    "scroll_pause_s": (0.15, 0.6),
-    "hover_pause_s": (0.12, 0.35),
-    "pre_click_pause_s": (0.08, 0.22),
-    "post_click_pause_s": (0.10, 0.25),
-    "mouse_wiggle_px": (4, 12),
-    "mouse_wiggle_steps": (2, 5),
-    "between_actions_pause": (0.08, 0.25),
-    "click_delay_jitter": (CLICK_DELAY * 0.8, CLICK_DELAY * 1.2),
-    "randomize_selectors": True,
+    "pre_page_warmup_scrolls": (1, 3),         # сколько раз «прогрелись» скроллом после открытия страницы
+    "scroll_step_px": (250, 900),              # диапазон шага скролла в пикселях
+    "scroll_pause_s": (0.18, 0.75),            # пауза между скроллами
+    "hover_pause_s": (0.14, 0.42),             # пауза при наведении на элементы
+    "pre_click_pause_s": (0.10, 0.28),         # короткая пауза перед кликом
+    "post_click_pause_s": (0.12, 0.32),        # пауза сразу после клика
+    "mouse_wiggle_px": (4, 12),                # амплитуда «подёргивания» мыши
+    "mouse_wiggle_steps": (2, 5),              # сколько шагов этих «подёргиваний»
+    "between_actions_pause": (0.10, 0.30),     # пауза между действиями (скролл, клик, наведение)
+    "click_delay_jitter": (CLICK_DELAY * 0.9, CLICK_DELAY * 1.25),  # разброс ожидания после клика по телефону
+    "randomize_selectors": True,               # иногда менять порядок селекторов, чтобы не бить всегда в один и тот же
 }
 
+
 # ===== теги в phones_map.json при пропусках =====
-TAG_NO_CALLS = "__SKIP_NO_CALLS__"
-TAG_UNAVAILABLE = "__SKIP_UNAVAILABLE__"
-TAG_ON_REVIEW = "__SKIP_ON_REVIEW__"
-TAG_LIMIT = "__SKIP_LIMIT__"  # закончился лимит показа контактов
+TAG_NO_CALLS = "__SKIP_NO_CALLS__"             # объявление «без звонков» / только сообщения
+TAG_UNAVAILABLE = "__SKIP_UNAVAILABLE__"       # объявление закрыто/удалено/недоступно
+TAG_ON_REVIEW = "__SKIP_ON_REVIEW__"           # объявление ещё на модерации
+TAG_LIMIT = "__SKIP_LIMIT__"                   # закончился лимит показа контактов на аккаунте
 
 # ========== ХЕЛПЕРЫ ==========
 
@@ -246,7 +263,6 @@ def is_limit_contacts_modal(page: Page) -> bool:
     html = safe_get_content(page).lower()
     if "закончился лимит" in html and "просмотр контактов" in html:
         return True
-    # кнопка «Купить контакты»
     try:
         loc = page.locator("text=Купить контакты").first
         if loc.is_visible():
@@ -291,7 +307,6 @@ def classify_ad_status(page: Page) -> str:
     if any(m in html for m in NO_CALLS_MARKERS):
         return "no_calls"
 
-    # доп. проверка «Без звонков»
     try:
         if page.locator("text=Без звонков").first.is_visible():
             return "no_calls"
@@ -351,7 +366,6 @@ def atomic_write_json(path: Path, data):
     tmp = path.with_suffix(path.suffix + f".tmp_{int(time.time()*1000)}_{random.randint(1000,9999)}")
     payload = json.dumps(data, ensure_ascii=False, indent=2)
     tmp.write_text(payload, encoding="utf-8")
-    # защитимся от WinError 5
     attempts, delay = 10, 0.1
     for _ in range(attempts):
         try:
@@ -500,30 +514,42 @@ def make_page_pool(context, size: int) -> list[Page]:
     return [context.new_page() for _ in range(size)]
 
 def process_urls_with_pool(context, urls: list[str], on_result, pending_queue: list[str]):
-    """Основной проход: переиспользуем вкладки и ждём DOMContentLoaded (быстрее)."""
+    """Основной проход: переиспользуем вкладки и ждём DOMContentLoaded; добавлены рассинхроны."""
     if not urls:
         return
+
+    # Пул создаём максимального размера; часть вкладок можем не использовать
     pages = make_page_pool(context, CONCURRENCY)
     try:
         it = iter(urls)
         while True:
+            # иногда делаем партию меньше максимума, чтобы поведение было менее ровным
+            batch_size = random.randint(max(1, CONCURRENCY - 1), CONCURRENCY) if BATCH_CONCURRENCY_JITTER else CONCURRENCY
+            batch_pages = pages[:batch_size]
+
             batch = []
-            for p in pages:
+            for idx, p in enumerate(batch_pages):
                 try:
                     url = next(it)
                 except StopIteration:
                     return
                 batch.append((url, p))
+
+                # не открываем все вкладки синхронно — ставим паузу перед каждым goto
+                human_sleep(*NAV_STAGGER_BETWEEN_TABS)
                 try:
                     p.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
                 except PWTimeoutError:
                     print(f"⚠️ Таймаут: {url}")
                     continue
-                human_sleep(0.2, 0.6)
+
+                # лёгкая «заминка» после навигации + пара скроллов
+                human_sleep(*POST_NAV_IDLE)
                 human_scroll_jitter(p, count=random.randint(1, 2))
 
-            # статус + модалки + попытка клика
+            # статус + модалки + попытка клика (тоже чуть «размазываем»)
             for url, p in batch:
+                human_pause_jitter()
                 st = classify_ad_status(p)
                 if st == "blocked":
                     print(f"🚫 Капча/блок: {url}")
@@ -549,7 +575,7 @@ def process_urls_with_pool(context, urls: list[str], on_result, pending_queue: l
 
                 close_city_or_cookie_modals(p)
                 if not click_show_phone_on_ad(p):
-                    # проверим ещё раз — вдруг это всё же on_review/limit
+                    # проверим ещё раз — вдруг это всё же on_review/limit/и т.д.
                     st2 = classify_ad_status(p)
                     if st2 == "on_review":
                         on_result(url, TAG_ON_REVIEW)
@@ -564,10 +590,10 @@ def process_urls_with_pool(context, urls: list[str], on_result, pending_queue: l
                     else:
                         dump_debug(p, url)
 
-            # ждём картинку телефона
+            # ждём картинку телефона (с небольшим джиттером между объявлениями)
             human_sleep(*HUMAN["click_delay_jitter"])
-
             for url, p in batch:
+                human_pause_jitter()
                 if close_login_modal_if_exists(p) or is_captcha_or_block(p):
                     continue
                 data_uri = extract_phone_data_uri_on_ad(p)
@@ -584,10 +610,12 @@ def process_urls_with_pool(context, urls: list[str], on_result, pending_queue: l
                 on_result(url, value)
                 print(f"✅ {url} -> {'[data:image...]' if SAVE_DATA_URI else value}")
 
+            # Пауза между партиями — тоже чуть шире
             human_sleep(*PAGE_DELAY_BETWEEN_BATCHES)
     finally:
         for p in pages:
             try:
+                human_sleep(*CLOSE_STAGGER_BETWEEN_TABS)
                 p.close()
             except Exception:
                 pass
@@ -603,6 +631,7 @@ def recheck_pending_once(context, on_result):
     still = []
     for url in pend:
         try:
+            human_sleep(*NAV_STAGGER_BETWEEN_TABS)  # тоже не открываем «в ноль»
             page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
         except Exception:
             still.append(url)
@@ -621,7 +650,12 @@ def recheck_pending_once(context, on_result):
                 time.sleep(random.uniform(*HUMAN["click_delay_jitter"]))
                 data_uri = extract_phone_data_uri_on_ad(page)
                 if data_uri:
-                    on_result(url, data_uri if SAVE_DATA_URI else save_phone_png_from_data_uri(data_uri, get_avito_id_from_url(url)))
+                    if SAVE_DATA_URI:
+                        on_result(url, data_uri)
+                    else:
+                        out = save_phone_png_from_data_uri(data_uri, get_avito_id_from_url(url))
+                        if out:
+                            on_result(url, out)
                     print(f"✅ (повтор) {url}")
                 else:
                     still.append(url)
@@ -634,7 +668,7 @@ def recheck_pending_once(context, on_result):
                     still.append(url)
                 else:
                     on_result(url, TAG_UNAVAILABLE)
-        human_sleep(0.6, 1.2)
+        human_sleep(0.8, 1.6)
     try:
         page.close()
     except Exception:
